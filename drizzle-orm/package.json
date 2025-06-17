@@ -21,7 +21,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/drizzle-team/drizzle-orm.git"
+		"url": "git+https://github.com/prometx11/drizzle-orm-beta.git"
 	},
 	"homepage": "https://orm.drizzle.team",
 	"keywords": [
