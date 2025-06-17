@@ -9,8 +9,7 @@
 			  "tsconfig.json",
 			  "tests/tsconfig.json",
 			  "../tsconfig.json"
-			],
-			"outputMode": "new-only"
+			]			
 		  },
 		  "build": {
 			"dependsOn": ["^build"],
@@ -26,14 +25,12 @@
 			  "scripts/fix-imports.ts",
 			  "../tsconfig.json"
 			],
-			"outputs": ["dist/**", "dist-dts/**"],
-			"outputMode": "new-only"
+			"outputs": ["dist/**", "dist-dts/**"]			
 		  },
 		  "pack": {
 			"dependsOn": ["build", "test:types"],
 			"inputs": ["dist/**"],
-			"outputs": ["package.tgz"],
-			"outputMode": "new-only"
+			"outputs": ["package.tgz"]			
 		  }
 		 
 		 
