@@ -57,12 +57,10 @@ jobs:
         working-directory: drizzle-orm
         run: pnpm prisma generate --schema src/prisma/schema.prisma
 
-      - name: Build
-        if: steps.checks.outputs.has_new_release == 'true'
+      - name: Build      
         run: pnpm build
 
-      - name: Pack
-        if: steps.checks.outputs.has_new_release == 'true'
+      - name: Pack      
         working-directory: ${{ matrix.package }}
         shell: bash
         env:
@@ -70,7 +68,7 @@ jobs:
         run: npm run pack
 
       - name: Publish
-        if: github.event_name == 'push' && steps.checks.outputs.has_new_release == 'true'
+        if: github.event_name == 'push'
         run: |
           version="${{ steps.checks.outputs.version }}"
 
