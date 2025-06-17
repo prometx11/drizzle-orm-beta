@@ -16,7 +16,7 @@ jobs:
     strategy:
       matrix:
         package:
-          - prometx11/drizzle-orm-beta 
+          - drizzle-orm  
     runs-on: ubuntu-22.04
     permissions:
       contents: read
