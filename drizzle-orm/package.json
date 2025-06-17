@@ -1,5 +1,5 @@
 {
-	"name": "drizzle-orm",
+	"name": "prometx11/drizzle-orm-beta",
 	"version": "0.43.1",
 	"description": "Drizzle ORM package for SQL databases",
 	"type": "module",
