@@ -65,6 +65,28 @@ test('create table: identity - no params', async () => {
 	expect(pst).toStrictEqual(st0);
 });
 
+test('view encryption', async () => {
+	const users = mssqlTable('users', {
+		id: int('id').primaryKey().notNull(),
+	});
+
+	const schema = {
+		users,
+		view: mssqlView('some_view').with({ encryption: true })
+			.as((
+				qb,
+			) => qb.select().from(users)),
+	};
+
+	const { sqlStatements: st } = await diff(schema, schema, []);
+
+	await push({ db, to: schema });
+	const { sqlStatements: pst } = await push({ db, to: schema });
+
+	expect(st).toStrictEqual([]);
+	expect(pst).toStrictEqual([]);
+});
+
 test('create table: identity always/by default - with params', async () => {
 	const schema1 = {};
 
@@ -428,8 +450,7 @@ test('alter view definition', async () => {
 	});
 
 	expect(st).toStrictEqual([
-		`DROP VIEW [view];`,
-		`CREATE VIEW [view] AS (select distinct [id] from [test] where [test].[id] = 1);`,
+		`ALTER VIEW [view] AS (select distinct [id] from [test] where [test].[id] = 1);`,
 	]);
 	expect(pst).toStrictEqual([]);
 });
@@ -489,8 +510,8 @@ test('fk multistep #1', async (t) => {
 	const { sqlStatements: st1 } = await push({ db, to: sch1, schemas: ['dbo'] });
 
 	const st01 = [
-		'CREATE TABLE [ref] (\n\t[id] int IDENTITY(1, 1),\n\t[name] varchar(1),\n\tCONSTRAINT [ref_name_key] UNIQUE([name])\n);\n',
-		'CREATE TABLE [users] (\n\t[name] varchar(1),\n\tCONSTRAINT [users_name_key] UNIQUE([name])\n);\n',
+		'CREATE TABLE [ref] (\n\t[id] int IDENTITY(1, 1),\n\t[name] varchar,\n\tCONSTRAINT [ref_name_key] UNIQUE([name])\n);\n',
+		'CREATE TABLE [users] (\n\t[name] varchar,\n\tCONSTRAINT [users_name_key] UNIQUE([name])\n);\n',
 		'ALTER TABLE [users] ADD CONSTRAINT [users_name_ref_name_fk] FOREIGN KEY ([name]) REFERENCES [ref]([name]);',
 	];
 
@@ -560,8 +581,8 @@ test('fk multistep #2', async (t) => {
 	const { sqlStatements: st1 } = await push({ db, to: sch1, schemas: ['dbo'] });
 
 	const st01 = [
-		'CREATE TABLE [ref] (\n\t[id] int IDENTITY(1, 1),\n\t[name] varchar(1),\n\tCONSTRAINT [ref_name_key] UNIQUE([name])\n);\n',
-		'CREATE TABLE [users] (\n\t[name] varchar(1),\n\tCONSTRAINT [users_name_key] UNIQUE([name])\n);\n',
+		'CREATE TABLE [ref] (\n\t[id] int IDENTITY(1, 1),\n\t[name] varchar,\n\tCONSTRAINT [ref_name_key] UNIQUE([name])\n);\n',
+		'CREATE TABLE [users] (\n\t[name] varchar,\n\tCONSTRAINT [users_name_key] UNIQUE([name])\n);\n',
 		'ALTER TABLE [users] ADD CONSTRAINT [users_name_ref_name_fk] FOREIGN KEY ([name]) REFERENCES [ref]([name]);',
 	];
 
@@ -636,8 +657,8 @@ test('rename fk', async (t) => {
 	const { sqlStatements: st1 } = await push({ db, to: sch1, schemas: ['dbo'] });
 
 	const st01 = [
-		'CREATE TABLE [ref] (\n\t[id] int IDENTITY(1, 1),\n\t[name] varchar(1),\n\tCONSTRAINT [ref_name_key] UNIQUE([name])\n);\n',
-		'CREATE TABLE [users] (\n\t[name] varchar(1),\n\tCONSTRAINT [users_name_key] UNIQUE([name])\n);\n',
+		'CREATE TABLE [ref] (\n\t[id] int IDENTITY(1, 1),\n\t[name] varchar,\n\tCONSTRAINT [ref_name_key] UNIQUE([name])\n);\n',
+		'CREATE TABLE [users] (\n\t[name] varchar,\n\tCONSTRAINT [users_name_key] UNIQUE([name])\n);\n',
 		'ALTER TABLE [users] ADD CONSTRAINT [some] FOREIGN KEY ([name]) REFERENCES [ref]([name]);',
 	];
 
@@ -933,7 +954,7 @@ test('hints + losses: add column with not null with default', async (t) => {
 	const { sqlStatements: pst1, hints, losses, error } = await push({ db, to: to });
 
 	const st_01 = [
-		`ALTER TABLE [users] ADD [age] int NOT NULL CONSTRAINT [users_age_default] DEFAULT 1;`,
+		`ALTER TABLE [users] ADD [age] int NOT NULL CONSTRAINT [users_age_default] DEFAULT ((1));`,
 	];
 
 	expect(pst1).toStrictEqual(st_01);
@@ -979,6 +1000,8 @@ test('hints + losses: alter column add not null without default', async (t) => {
 // TODO
 // this should definitely fail
 // MSSQL does not support altering column for adding default
+//                                                                  not possible
+// <ALTER TABLE [users] ALTER COLUMN [name] varchar(200) NOT NULL> !CONSTRAINT DEFAULT ...!;
 //
 // Even if to try change data type + add default + add not null
 // MSSQL will not update existing NULLS to defaults, so this will not work
@@ -1005,7 +1028,7 @@ test('hints + losses: alter column add not null with default', async (t) => {
 
 	const st_01 = [
 		`ALTER TABLE [users] ALTER COLUMN [name] varchar(200) NOT NULL;`,
-		`ALTER TABLE [users] ADD CONSTRAINT [users_name_default] DEFAULT '1' FOR [name];`,
+		`ALTER TABLE [users] ADD CONSTRAINT [users_name_default] DEFAULT ('1') FOR [name];`,
 	];
 
 	expect(pst1).toStrictEqual(st_01);

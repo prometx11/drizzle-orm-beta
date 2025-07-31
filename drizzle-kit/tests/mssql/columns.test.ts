@@ -41,7 +41,7 @@ test('add columns #1', async (t) => {
 	const { sqlStatements: pst } = await push({ db, to: schema2, schemas: ['dbo'] });
 
 	const st0 = [
-		`ALTER TABLE [users] ADD [name] text NOT NULL CONSTRAINT [users_name_default] DEFAULT 'hey';`,
+		`ALTER TABLE [users] ADD [name] text NOT NULL CONSTRAINT [users_name_default] DEFAULT ('hey');`,
 	];
 
 	expect(st).toStrictEqual(st0);
@@ -128,7 +128,7 @@ test('add columns #4. With default', async (t) => {
 
 	const st0 = [
 		'ALTER TABLE [users] ADD [name] varchar(100) NOT NULL;',
-		`ALTER TABLE [users] ADD [email] text CONSTRAINT [users_email_default] DEFAULT 'hey';`,
+		`ALTER TABLE [users] ADD [email] text CONSTRAINT [users_email_default] DEFAULT ('hey');`,
 		'ALTER TABLE [users] ADD CONSTRAINT [users_pkey] PRIMARY KEY ([name]);',
 	];
 	expect(st).toStrictEqual(st0);
@@ -157,7 +157,7 @@ test('add columns #5. With not null and with default', async (t) => {
 
 	const st0 = [
 		'ALTER TABLE [users] ADD [name] varchar(100) NOT NULL;',
-		`ALTER TABLE [users] ADD [email] text NOT NULL CONSTRAINT [users_email_default] DEFAULT 'hey';`,
+		`ALTER TABLE [users] ADD [email] text NOT NULL CONSTRAINT [users_email_default] DEFAULT ('hey');`,
 		'ALTER TABLE [users] ADD CONSTRAINT [users_pkey] PRIMARY KEY ([name]);',
 	];
 	expect(st).toStrictEqual(st0);
@@ -186,7 +186,7 @@ test('alter column: change data type, add not null with default', async (t) => {
 
 	const st_01 = [
 		`ALTER TABLE [users] ALTER COLUMN [name] varchar(200) NOT NULL;`,
-		`ALTER TABLE [users] ADD CONSTRAINT [users_name_default] DEFAULT '1' FOR [name];`,
+		`ALTER TABLE [users] ADD CONSTRAINT [users_name_default] DEFAULT ('1') FOR [name];`,
 	];
 
 	expect(pst1).toStrictEqual(st_01);
@@ -386,7 +386,7 @@ test('rename column #2. Part of unique constraint', async (t) => {
 	expect(pst).toStrictEqual(st0);
 });
 
-test.todo('rename column #3. Part of check constraint', async (t) => {
+test('rename column #3. Part of check constraint', async (t) => {
 	const newSchema = mssqlSchema('new_schema');
 	const schema1 = {
 		newSchema,
@@ -407,12 +407,13 @@ test.todo('rename column #3. Part of check constraint', async (t) => {
 	]);
 
 	await push({ db, to: schema1 });
-	const { sqlStatements: pst } = await push({
+	const { sqlStatements: pst, hints: phints } = await push({
 		db,
 		to: schema2,
 		renames: [
 			'new_schema.users.id->new_schema.users.id1',
 		],
+		expectError: true,
 	});
 
 	const st0 = [
@@ -421,7 +422,14 @@ test.todo('rename column #3. Part of check constraint', async (t) => {
 		`ALTER TABLE [new_schema].[users] ADD CONSTRAINT [hey] CHECK ([users].[id1] != 2);`,
 	];
 	expect(st).toStrictEqual(st0);
-	expect(pst).toStrictEqual(st0);
+	// error expected
+	// since there will be changes in defintion
+	// push will skip alter definition and tries to rename column
+	// expect(pst).toStrictEqual(st0);
+	expect(phints).toStrictEqual([
+		`· You are trying to rename column from id to id1, but it is not possible to rename a column if it is used in a check constraint on the table. 
+To rename the column, first drop the check constraint, then rename the column, and finally recreate the check constraint`,
+	]);
 });
 
 test('drop column #1. Part of check constraint', async (t) => {
@@ -1034,8 +1042,8 @@ test('varchar and text default values escape single quotes', async () => {
 	});
 
 	const st0 = [
-		`ALTER TABLE [table] ADD [text] text CONSTRAINT [table_text_default] DEFAULT 'escape''s quotes';`,
-		`ALTER TABLE [table] ADD [varchar] varchar(100) CONSTRAINT [table_varchar_default] DEFAULT 'escape''s quotes';`,
+		`ALTER TABLE [table] ADD [text] text CONSTRAINT [table_text_default] DEFAULT ('escape''s quotes');`,
+		`ALTER TABLE [table] ADD [varchar] varchar(100) CONSTRAINT [table_varchar_default] DEFAULT ('escape''s quotes');`,
 	];
 
 	expect(st).toStrictEqual(st0);
@@ -1071,13 +1079,13 @@ test('add columns with defaults', async () => {
 	});
 
 	const st0 = [
-		`ALTER TABLE [table] ADD [text1] text CONSTRAINT [table_text1_default] DEFAULT '';`,
-		`ALTER TABLE [table] ADD [text2] text CONSTRAINT [table_text2_default] DEFAULT 'text';`,
-		`ALTER TABLE [table] ADD [int1] int CONSTRAINT [table_int1_default] DEFAULT 10;`,
-		`ALTER TABLE [table] ADD [int2] int CONSTRAINT [table_int2_default] DEFAULT 0;`,
-		`ALTER TABLE [table] ADD [int3] int CONSTRAINT [table_int3_default] DEFAULT -10;`,
-		`ALTER TABLE [table] ADD [bool1] bit CONSTRAINT [table_bool1_default] DEFAULT 1;`,
-		`ALTER TABLE [table] ADD [bool2] bit CONSTRAINT [table_bool2_default] DEFAULT 0;`,
+		`ALTER TABLE [table] ADD [text1] text CONSTRAINT [table_text1_default] DEFAULT ('');`,
+		`ALTER TABLE [table] ADD [text2] text CONSTRAINT [table_text2_default] DEFAULT ('text');`,
+		`ALTER TABLE [table] ADD [int1] int CONSTRAINT [table_int1_default] DEFAULT ((10));`,
+		`ALTER TABLE [table] ADD [int2] int CONSTRAINT [table_int2_default] DEFAULT ((0));`,
+		`ALTER TABLE [table] ADD [int3] int CONSTRAINT [table_int3_default] DEFAULT ((-10));`,
+		`ALTER TABLE [table] ADD [bool1] bit CONSTRAINT [table_bool1_default] DEFAULT ((1));`,
+		`ALTER TABLE [table] ADD [bool2] bit CONSTRAINT [table_bool2_default] DEFAULT ((0));`,
 	];
 
 	expect(st).toStrictEqual(st0);
@@ -1265,7 +1273,7 @@ test('drop identity from existing column #1. Rename table + rename column. Add d
 		`EXEC sp_rename 'users', [users2];`,
 		`EXEC sp_rename 'users2.id', [id1], 'COLUMN';`,
 		`EXEC sp_rename 'users2.id1', [__old_id1], 'COLUMN';`,
-		`ALTER TABLE [users2] ADD [id1] int CONSTRAINT [users2_id1_default] DEFAULT 1;`,
+		`ALTER TABLE [users2] ADD [id1] int CONSTRAINT [users2_id1_default] DEFAULT ((1));`,
 		`INSERT INTO [users2] ([id1]) SELECT [__old_id1] FROM [users2];`,
 		`ALTER TABLE [users2] DROP COLUMN [__old_id1];`,
 	];
@@ -2260,7 +2268,7 @@ test('drop identity from existing column #27. Add not null and add default', asy
 
 	const st0 = [
 		`EXEC sp_rename 'users.id', [__old_id], 'COLUMN';`,
-		`ALTER TABLE [users] ADD [id] int NOT NULL CONSTRAINT [users_id_default] DEFAULT 1;`,
+		`ALTER TABLE [users] ADD [id] int NOT NULL CONSTRAINT [users_id_default] DEFAULT ((1));`,
 		`INSERT INTO [users] ([id]) SELECT [__old_id] FROM [users];`,
 		`ALTER TABLE [users] DROP COLUMN [__old_id];`,
 	];
@@ -2325,7 +2333,7 @@ test('alter column change data type', async (t) => {
 		to: schema2,
 	});
 
-	const st0 = [`ALTER TABLE [users] ALTER COLUMN [name] varchar(1);`];
+	const st0 = [`ALTER TABLE [users] ALTER COLUMN [name] varchar;`];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
 });
@@ -2352,7 +2360,7 @@ test('alter column change data type + add not null', async (t) => {
 		to: schema2,
 	});
 
-	const st0 = [`ALTER TABLE [users] ALTER COLUMN [name] varchar(1) NOT NULL;`];
+	const st0 = [`ALTER TABLE [users] ALTER COLUMN [name] varchar NOT NULL;`];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
 });
@@ -2380,7 +2388,7 @@ test('alter column change data type + drop not null', async (t) => {
 		to: schema2,
 	});
 
-	const st0 = [`ALTER TABLE [users] ALTER COLUMN [name] varchar(1);`];
+	const st0 = [`ALTER TABLE [users] ALTER COLUMN [name] varchar;`];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
 });

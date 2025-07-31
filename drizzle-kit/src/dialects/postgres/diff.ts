@@ -19,8 +19,8 @@ import {
 	PostgresDDL,
 	PostgresEntities,
 	PrimaryKey,
-	Role,
 	Privilege,
+	Role,
 	Schema,
 	Sequence,
 	tableFromDDL,
@@ -270,6 +270,16 @@ export const ddlDiff = async (
 				tableTo: rename.from.name,
 			},
 		});
+		ddl2.fks.update({
+			set: {
+				schemaTo: rename.to.schema,
+				tableTo: rename.to.name,
+			},
+			where: {
+				schemaTo: rename.from.schema,
+				tableTo: rename.from.name,
+			},
+		});
 
 		ddl1.fks.update({
 			set: {
@@ -293,15 +303,14 @@ export const ddlDiff = async (
 			},
 		});
 
-		// DDL2 updates are needed for Drizzle Studio
-		ddl2.policies.update({
+		ddl2.entities.update({
 			set: {
-				schema: rename.to.schema,
 				table: rename.to.name,
+				schema: rename.to.schema,
 			},
 			where: {
-				schema: rename.from.schema,
 				table: rename.from.name,
+				schema: rename.from.schema,
 			},
 		});
 	}
@@ -1135,7 +1144,6 @@ export const ddlDiff = async (
 
 	jsonStatements.push(...createTables);
 
-	jsonStatements.push(...jsonAlterRlsStatements);
 	jsonStatements.push(...jsonDropViews);
 	jsonStatements.push(...jsonRenameViews);
 	jsonStatements.push(...jsonMoveViews);
@@ -1145,6 +1153,7 @@ export const ddlDiff = async (
 	jsonStatements.push(...jsonDropPoliciesStatements); // before drop tables
 	jsonStatements.push(...jsonDropTables);
 	jsonStatements.push(...jsonRenameTables);
+	jsonStatements.push(...jsonAlterRlsStatements);
 	jsonStatements.push(...jsonSetTableSchemas);
 	jsonStatements.push(...jsonRenameColumnsStatements);
 
