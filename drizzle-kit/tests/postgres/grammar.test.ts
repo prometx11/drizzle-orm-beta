@@ -1,53 +1,5 @@
-import { parseViewDefinition, splitExpressions, trimDefaultValueSuffix } from 'src/dialects/postgres/grammar';
+import { splitSqlType, trimDefaultValueSuffix } from 'src/dialects/postgres/grammar';
 import { expect, test } from 'vitest';
-
-test.each([
-	['lower(name)', ['lower(name)']],
-	['lower(name), upper(name)', ['lower(name)', 'upper(name)']],
-	['lower(name), lower(name)', ['lower(name)', 'lower(name)']],
-	[`((name || ','::text) || name1)`, [`((name || ','::text) || name1)`]],
-	["((name || ','::text) || name1), SUBSTRING(name1 FROM 1 FOR 3)", [
-		"((name || ','::text) || name1)",
-		'SUBSTRING(name1 FROM 1 FOR 3)',
-	]],
-	[`((name || ','::text) || name1), COALESCE("name", '"default", value'::text)`, [
-		`((name || ','::text) || name1)`,
-		`COALESCE("name", '"default", value'::text)`,
-	]],
-	["COALESCE(name, 'default,'' value'''::text), SUBSTRING(name1 FROM 1 FOR 3)", [
-		"COALESCE(name, 'default,'' value'''::text)",
-		'SUBSTRING(name1 FROM 1 FOR 3)',
-	]],
-	["COALESCE(name, 'default,value'''::text), SUBSTRING(name1 FROM 1 FOR 3)", [
-		"COALESCE(name, 'default,value'''::text)",
-		'SUBSTRING(name1 FROM 1 FOR 3)',
-	]],
-	["COALESCE(name, 'default,''value'::text), SUBSTRING(name1 FROM 1 FOR 3)", [
-		"COALESCE(name, 'default,''value'::text)",
-		'SUBSTRING(name1 FROM 1 FOR 3)',
-	]],
-	["COALESCE(name, 'default,value'::text), SUBSTRING(name1 FROM 1 FOR 3)", [
-		"COALESCE(name, 'default,value'::text)",
-		'SUBSTRING(name1 FROM 1 FOR 3)',
-	]],
-	["COALESCE(name, 'default, value'::text), SUBSTRING(name1 FROM 1 FOR 3)", [
-		"COALESCE(name, 'default, value'::text)",
-		'SUBSTRING(name1 FROM 1 FOR 3)',
-	]],
-	[`COALESCE("name", '"default", value'::text), SUBSTRING("name1" FROM 1 FOR 3)`, [
-		`COALESCE("name", '"default", value'::text)`,
-		`SUBSTRING("name1" FROM 1 FOR 3)`,
-	]],
-	[`COALESCE("namewithcomma,", '"default", value'::text), SUBSTRING("name1" FROM 1 FOR 3)`, [
-		`COALESCE("namewithcomma,", '"default", value'::text)`,
-		`SUBSTRING("name1" FROM 1 FOR 3)`,
-	]],
-	["((lower(first_name) || ', '::text) || lower(last_name))", [
-		"((lower(first_name) || ', '::text) || lower(last_name))",
-	]],
-])('split expression %#: %s', (it, expected) => {
-	expect(splitExpressions(it)).toStrictEqual(expected);
-});
 
 test.each([
 	["'a'::my_enum", "'a'"],
@@ -104,4 +56,29 @@ test.each([
 	[`(predict -> 'predictions'::text)`, `(predict -> 'predictions'::text)`],
 ])('trim default suffix %#: %s', (it, expected) => {
 	expect(trimDefaultValueSuffix(it)).toBe(expected);
+});
+
+test('split sql type', () => {
+	expect.soft(splitSqlType('numeric')).toStrictEqual({ type: 'numeric', options: null });
+	expect.soft(splitSqlType('numeric(10)')).toStrictEqual({ type: 'numeric', options: '10' });
+	expect.soft(splitSqlType('numeric(10,0)')).toStrictEqual({ type: 'numeric', options: '10,0' });
+	expect.soft(splitSqlType('numeric(10,2)')).toStrictEqual({ type: 'numeric', options: '10,2' });
+
+	expect.soft(splitSqlType('numeric[]')).toStrictEqual({ type: 'numeric', options: null });
+	expect.soft(splitSqlType('numeric(10)[]')).toStrictEqual({ type: 'numeric', options: '10' });
+	expect.soft(splitSqlType('numeric(10,0)[]')).toStrictEqual({ type: 'numeric', options: '10,0' });
+	expect.soft(splitSqlType('numeric(10,2)[]')).toStrictEqual({ type: 'numeric', options: '10,2' });
+
+	expect.soft(splitSqlType('numeric[][]')).toStrictEqual({ type: 'numeric', options: null });
+	expect.soft(splitSqlType('numeric(10)[][]')).toStrictEqual({ type: 'numeric', options: '10' });
+	expect.soft(splitSqlType('numeric(10,0)[][]')).toStrictEqual({ type: 'numeric', options: '10,0' });
+	expect.soft(splitSqlType('numeric(10,2)[][]')).toStrictEqual({ type: 'numeric', options: '10,2' });
+});
+
+test('to default array', () => {
+	// TODO: wrong test?
+	// expect.soft(toDefaultArray([['one'], ['two']], 1, (it) => JSON.stringify(it))).toBe(`{["one"],["two"]}`);
+	// expect.soft(toDefaultArray([{ key: 'one' }, { key: 'two' }], 1, (it) => JSON.stringify(it))).toBe(
+	// 	`{{"key":"one"},{"key":"two"}}`,
+	// );
 });

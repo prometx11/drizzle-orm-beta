@@ -7,6 +7,7 @@ import {
 	char,
 	check,
 	cidr,
+	customType,
 	date,
 	doublePrecision,
 	index,
@@ -377,6 +378,9 @@ test('introspect all column types', async () => {
 			macaddr: macaddr('macaddr').default('00:00:00:00:00:00'),
 			macaddr8: macaddr8('macaddr8').default('00:00:00:ff:fe:00:00:00'),
 			interval: interval('interval').default('1 day 01:00:00'),
+			customType: customType({
+				dataType: () => 'tsvector',
+			})().default("to_tsvector('english', 'The Fat Rats')"),
 		}),
 	};
 
@@ -386,8 +390,8 @@ test('introspect all column types', async () => {
 		'introspect-all-columns-types',
 	);
 
-	expect(statements.length).toBe(0);
-	expect(sqlStatements.length).toBe(0);
+	expect(statements).toStrictEqual([]);
+	expect(sqlStatements).toStrictEqual([]);
 });
 
 test('introspect all column array types', async () => {
@@ -940,3 +944,118 @@ test('multiple policies with roles from schema', async () => {
 	expect(statements.length).toBe(0);
 	expect(sqlStatements.length).toBe(0);
 });
+
+test('case sensitive schema name + identity column', async () => {
+	const mySchema = pgSchema('CaseSensitiveSchema');
+	const schema = {
+		mySchema,
+		users: mySchema.table('users', {
+			id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
+			name: text('name'),
+		}),
+	};
+
+	const { statements, sqlStatements } = await diffIntrospect(
+		db,
+		schema,
+		'case-sensitive-schema-name',
+		['CaseSensitiveSchema'],
+	);
+
+	expect(statements.length).toBe(0);
+	expect(sqlStatements.length).toBe(0);
+});
+
+test('introspect without any schema', async () => {
+	await db.query(`DROP SCHEMA "public" cascade`);
+	const schema = {};
+	const { statements, sqlStatements } = await diffIntrospect(
+		db,
+		schema,
+		'introspect-without-any-schema',
+	);
+
+	expect(statements.length).toBe(0);
+	expect(sqlStatements.length).toBe(0);
+});
+
+test('introspect foreign keys', async () => {
+	const mySchema = pgSchema('my_schema');
+	const users = pgTable('users', {
+		id: integer('id').primaryKey(),
+		name: text('name'),
+	});
+	const schema = {
+		mySchema,
+		users,
+		posts: mySchema.table('posts', {
+			id: integer('id').primaryKey(),
+			userId: integer('user_id').references(() => users.id),
+		}),
+	};
+	const { statements, sqlStatements, ddlAfterPull } = await diffIntrospect(
+		db,
+		schema,
+		'introspect-foreign-keys',
+		['my_schema', 'public'],
+	);
+
+	expect(statements.length).toBe(0);
+	expect(sqlStatements.length).toBe(0);
+	expect(ddlAfterPull.fks.one({
+		schema: 'my_schema',
+		table: 'posts',
+		columns: ['user_id'],
+		schemaTo: 'public',
+		tableTo: 'users',
+		columnsTo: ['id'],
+	})).not.toBeNull();
+});
+
+test('introspect partitioned tables', async () => {
+	await db.query(`
+		CREATE TABLE measurement (
+			city_id         int not null,
+			logdate         date not null,
+			peaktemp        int,
+			unitsales       int
+		) PARTITION BY RANGE (logdate);
+	`);
+
+	const { tables } = await fromDatabase(db);
+
+	expect(tables).toStrictEqual([
+		{
+			name: 'measurement',
+			schema: 'public',
+			entityType: 'tables',
+			isRlsEnabled: false,
+		} satisfies typeof tables[number],
+	]);
+});
+
+// test('introspect foreign tables', async () => {
+// 	await db.query('CREATE EXTENSION postgres_fdw;');
+// 	await db.query("CREATE SERVER film_server FOREIGN DATA WRAPPER postgres_fdw OPTIONS (host 'foo', dbname 'foodb', port '5432');");
+// 	await db.query(`
+// 		CREATE FOREIGN TABLE films (
+// 			code        char(5) NOT NULL,
+// 			title       varchar(40) NOT NULL,
+// 			did         integer NOT NULL,
+// 			date_prod   date,
+// 			kind        varchar(10),
+// 			len         interval hour to minute
+// 		) SERVER film_server;
+// 	`);
+
+// 	const { tables } = await fromDatabase(db);
+
+// 	expect(tables).toStrictEqual([
+// 		{
+// 			name: 'films',
+// 			schema: 'public',
+// 			entityType: 'tables',
+// 			isRlsEnabled: false,
+// 		} satisfies typeof tables[number],
+// 	]);
+// });

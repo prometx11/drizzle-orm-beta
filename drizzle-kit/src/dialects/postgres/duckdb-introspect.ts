@@ -20,18 +20,7 @@ import type {
 	View,
 	ViewColumn,
 } from './ddl';
-import {
-	defaultForColumn,
-	defaults,
-	isSerialExpression,
-	isSystemNamespace,
-	parseOnType,
-	parseViewDefinition,
-	splitExpressions,
-	splitSqlType,
-	stringFromDatabaseIdentityProperty as parseIdentityProperty,
-	wrapRecord,
-} from './grammar';
+import { defaultForColumn, isSystemNamespace, parseViewDefinition } from './grammar';
 
 // TODO: tables/schema/entities -> filter: (entity: {type: ... , metadata: ... }) => boolean;
 // TODO: since we by default only introspect public
@@ -535,14 +524,13 @@ export const fromDatabase = async (
 
 		columnTypeMapped = trimChar(columnTypeMapped, '"');
 
-		const { type, options } = splitSqlType(columnTypeMapped);
-
 		const columnDefault = column.default;
 
 		const defaultValue = defaultForColumn(
-			type,
+			columnTypeMapped,
 			columnDefault,
 			0,
+			false, // TODO
 		);
 
 		const unique = constraintsList.find((it) => {
@@ -560,8 +548,7 @@ export const fromDatabase = async (
 			schema: table.schema,
 			table: table.name,
 			name: column.name,
-			type,
-			options,
+			type: columnTypeMapped,
 			// typeSchema: enumType ? enumType.schema ?? 'public' : null,
 			typeSchema: null,
 			dimensions,

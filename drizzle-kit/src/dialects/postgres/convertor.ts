@@ -1,5 +1,5 @@
-import { escapeSingleQuotes, type Simplify } from '../../utils';
-import { defaultNameForPK, defaults, defaultToSQL, isDefaultAction } from './grammar';
+import { escapeSingleQuotes, type Simplify, wrapWith } from '../../utils';
+import { defaultNameForPK, defaults, defaultToSQL, isDefaultAction, isSerialType, splitSqlType } from './grammar';
 import type { JsonStatement } from './statements';
 
 export const convertor = <
@@ -131,8 +131,10 @@ const createTableConvertor = convertor('create_table', (st) => {
 		const isPK = pk && pk.columns.length === 1 && pk.columns[0] === column.name
 			&& pk.name === defaultNameForPK(column.table);
 
+		const isSerial = isSerialType(column.type);
+
 		const primaryKeyStatement = isPK ? ' PRIMARY KEY' : '';
-		const notNullStatement = isPK ? '' : column.notNull && !column.identity ? ' NOT NULL' : '';
+		const notNullStatement = isPK || isSerial ? '' : column.notNull && !column.identity ? ' NOT NULL' : '';
 		const defaultStatement = column.default ? ` DEFAULT ${defaultToSQL(column)}` : '';
 
 		const unique = uniques.find((u) => u.columns.length === 1 && u.columns[0] === column.name);
@@ -149,10 +151,10 @@ const createTableConvertor = convertor('create_table', (st) => {
 			? `"${column.typeSchema}".`
 			: '';
 
-		const arr = column.dimensions > 0 ? '[]'.repeat(column.dimensions) : '';
-		const options = column.options ? `(${column.options})` : '';
-		const colType = column.typeSchema ? `"${column.type}"` : column.type;
-		const type = `${schemaPrefix}${colType}${options}${arr}`;
+		const colType = column.typeSchema
+			? `"${column.type}"`
+			: column.type;
+		const type = `${schemaPrefix}${colType}${'[]'.repeat(column.dimensions)}`;
 
 		const generated = column.generated;
 
@@ -266,11 +268,14 @@ const addColumnConvertor = convertor('add_column', (st) => {
 		? `"${column.typeSchema}".`
 		: '';
 
-	const options = column.options ? `(${column.options})` : '';
-	const type = column.typeSchema ? `"${column.type}"` : column.type;
-	let fixedType = `${schemaPrefix}${type}${options}${'[]'.repeat(column.dimensions)}`;
+	const type = column.typeSchema
+		? `"${column.type}"`
+		: column.type;
+	let fixedType = `${schemaPrefix}${type}${'[]'.repeat(column.dimensions)}`;
 
-	const notNullStatement = column.notNull && !identity && !generated ? ' NOT NULL' : '';
+	const isSerial = isSerialType(column.type);
+
+	const notNullStatement = column.notNull && !identity && !generated && !isSerial ? ' NOT NULL' : '';
 
 	const identityWithSchema = schema !== 'public'
 		? `"${schema}"."${identity?.name}"`
@@ -345,11 +350,12 @@ const alterColumnConvertor = convertor('alter_column', (st) => {
 		statements.push(`ALTER TABLE ${key} ALTER COLUMN "${column.name}" DROP DEFAULT;`);
 	}
 
-	if (diff.type || diff.options) {
+	if (diff.type) {
 		const typeSchema = column.typeSchema && column.typeSchema !== 'public' ? `"${column.typeSchema}".` : '';
 		const textProxy = wasEnum && isEnum ? 'text::' : ''; // using enum1::text::enum2
-		const arrSuffix = column.dimensions > 0 ? '[]'.repeat(column.dimensions) : '';
-		const suffix = isEnum ? ` USING "${column.name}"::${textProxy}${typeSchema}"${column.type}"${arrSuffix}` : '';
+		const suffix = isEnum
+			? ` USING "${column.name}"::${textProxy}${typeSchema}"${column.type}"${'[]'.repeat(column.dimensions)}`
+			: '';
 		let type: string;
 
 		if (diff.type) {
@@ -362,9 +368,11 @@ const alterColumnConvertor = convertor('alter_column', (st) => {
 			type = `${typeSchema}${column.typeSchema ? `"${column.type}"` : column.type}`;
 		}
 
-		type += column.options ? `(${column.options})` : '';
-		type += arrSuffix;
-		statements.push(`ALTER TABLE ${key} ALTER COLUMN "${column.name}" SET DATA TYPE ${type}${suffix};`);
+		statements.push(
+			`ALTER TABLE ${key} ALTER COLUMN "${column.name}" SET DATA TYPE ${type}${
+				'[]'.repeat(column.dimensions)
+			}${suffix};`,
+		);
 
 		if (recreateDefault) {
 			statements.push(
@@ -646,7 +654,7 @@ const createEnumConvertor = convertor('create_enum', (st) => {
 	const enumNameWithSchema = schema !== 'public' ? `"${schema}"."${name}"` : `"${name}"`;
 
 	let valuesStatement = '(';
-	valuesStatement += values.map((it) => `'${escapeSingleQuotes(it)}'`).join(', ');
+	valuesStatement += values.map((it) => wrapWith(it.replaceAll("'", "''"), "'")).join(', ');
 	valuesStatement += ')';
 
 	return `CREATE TYPE ${enumNameWithSchema} AS ENUM${valuesStatement};`;
@@ -690,7 +698,9 @@ const recreateEnumConvertor = convertor('recreate_enum', (st) => {
 	const statements: string[] = [];
 	for (const column of columns) {
 		const key = column.schema !== 'public' ? `"${column.schema}"."${column.table}"` : `"${column.table}"`;
-		statements.push(`ALTER TABLE ${key} ALTER COLUMN "${column.name}" SET DATA TYPE text;`);
+		statements.push(
+			`ALTER TABLE ${key} ALTER COLUMN "${column.name}" SET DATA TYPE text${'[]'.repeat(column.dimensions)};`,
+		);
 		if (column.default) statements.push(`ALTER TABLE ${key} ALTER COLUMN "${column.name}" DROP DEFAULT;`);
 	}
 	statements.push(dropEnumConvertor.convert({ enum: to }) as string);
@@ -698,10 +708,11 @@ const recreateEnumConvertor = convertor('recreate_enum', (st) => {
 
 	for (const column of columns) {
 		const key = column.schema !== 'public' ? `"${column.schema}"."${column.table}"` : `"${column.table}"`;
-		const arr = column.dimensions > 0 ? '[]'.repeat(column.dimensions) : '';
-		const enumType = to.schema !== 'public' ? `"${to.schema}"."${to.name}"${arr}` : `"${to.name}"${arr}`;
+		const enumType = to.schema !== 'public' ? `"${to.schema}"."${to.name}"` : `"${to.name}"`;
 		statements.push(
-			`ALTER TABLE ${key} ALTER COLUMN "${column.name}" SET DATA TYPE ${enumType} USING "${column.name}"::${enumType};`,
+			`ALTER TABLE ${key} ALTER COLUMN "${column.name}" SET DATA TYPE ${enumType}${
+				'[]'.repeat(column.dimensions)
+			} USING "${column.name}"::${enumType}${'[]'.repeat(column.dimensions)};`,
 		);
 		if (column.default) {
 			statements.push(

@@ -9,6 +9,10 @@ import {
 	text,
 	unique,
 } from 'drizzle-orm/pg-core';
+import { introspect } from 'src/cli/commands/pull-postgres';
+import { EmptyProgressView } from 'src/cli/views';
+import { interimToDDL } from 'src/dialects/postgres/ddl';
+import { fromDatabase } from 'src/ext/studio-postgres';
 import { DB } from 'src/utils';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'vitest';
 import { diff, drizzleToDDL, prepareTestDatabase, push, TestDatabase } from './mocks';
@@ -1656,4 +1660,43 @@ test('fk multistep #3', async () => {
 
 	const { sqlStatements: st1 } = await diff(ddl1, ddl2, ['public.users->public.users2']);
 	expect(st1).toStrictEqual(['ALTER TABLE "users" RENAME TO "users2";']);
+});
+
+test('unique multistep #3', async () => {
+	await db.query(`CREATE TABLE "users" ("id" integer CONSTRAINT "id_uniq" UNIQUE);`);
+	const interim = await fromDatabase(db);
+	const { ddl: ddl1 } = interimToDDL(interim);
+	const { ddl: ddl2 } = interimToDDL(interim);
+
+	ddl2.tables.update({
+		set: { name: 'users2' },
+		where: { name: 'users' },
+	});
+
+	const { sqlStatements: st1 } = await diff(ddl1, ddl2, ['public.users->public.users2']);
+	expect(st1).toStrictEqual(['ALTER TABLE "users" RENAME TO "users2";']);
+});
+
+test('constraints order', async () => {
+	const users = pgTable('users', {
+		col1: text(),
+		col2: text(),
+	}, (t) => [
+		unique().on(t.col1, t.col2),
+	]);
+
+	const posts = pgTable('posts', {
+		col1: text(),
+		col2: text(),
+	}, (t) => [
+		foreignKey({ columns: [t.col1, t.col2], foreignColumns: [users.col1, users.col2] }),
+	]);
+
+	const to = {
+		users,
+		posts,
+	};
+
+	const { sqlStatements: st } = await diff({}, to, []);
+	const { sqlStatements: pst } = await push({ db, to });
 });

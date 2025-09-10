@@ -10,7 +10,7 @@ import {
 	One,
 	Relations,
 	TablesRelationalConfig,
-} from 'drizzle-orm';
+} from 'drizzle-orm/_relations';
 import { AnyMsSqlTable, getTableConfig as mssqlTableConfig, MsSqlTable } from 'drizzle-orm/mssql-core';
 import { AnyMySqlTable, getTableConfig as mysqlTableConfig, MySqlTable } from 'drizzle-orm/mysql-core';
 import { AnyPgTable, getTableConfig as pgTableConfig, PgTable } from 'drizzle-orm/pg-core';
@@ -26,11 +26,11 @@ import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
 import { createServer } from 'node:https';
 import { LibSQLCredentials } from 'src/cli/validations/libsql';
-import { JSONB } from '../../utils/when-json-met-bigint';
 import { z } from 'zod';
 import { assertUnreachable, Proxy, TransactionProxy } from '../../utils';
 import { safeRegister } from '../../utils/utils-node';
 import { prepareFilenames } from '../../utils/utils-node';
+import { JSONB } from '../../utils/when-json-met-bigint';
 import type { MysqlCredentials } from '../validations/mysql';
 import type { PostgresCredentials } from '../validations/postgres';
 import type { SingleStoreCredentials } from '../validations/singlestore';
@@ -282,7 +282,7 @@ const getCustomDefaults = <T extends AnyTable<{}>>(schema: Record<string, Record
 			} else if (is(table, SQLiteTable)) {
 				tableConfig = sqliteTableConfig(table);
 			} else {
-				tableConfig = singlestoreTableConfig(table);
+				tableConfig = singlestoreTableConfig(table as SingleStoreTable);
 			}
 
 			tableConfig.columns.map((column) => {

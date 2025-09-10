@@ -1,5 +1,4 @@
 import { getTableName, is } from 'drizzle-orm';
-import { AnyPgTable } from 'drizzle-orm/pg-core';
 import {
 	createTableRelationsHelpers,
 	extractTablesRelationalConfig,
@@ -7,12 +6,13 @@ import {
 	One,
 	Relation,
 	Relations,
-} from 'drizzle-orm/relations';
+} from 'drizzle-orm/_relations';
+import { AnyPgTable } from 'drizzle-orm/pg-core';
 import '../../@types/utils';
 import { toCamelCase } from 'drizzle-orm/casing';
-import { parseArray } from 'src/utils/parse-pgarray';
 import { Casing } from '../../cli/validations/common';
-import { ArrayValue, assertUnreachable, stringifyArray, trimChar } from '../../utils';
+import { assertUnreachable, trimChar } from '../../utils';
+import { escapeForTsLiteral, inspect } from '../utils';
 import {
 	CheckConstraint,
 	Column,
@@ -25,25 +25,28 @@ import {
 	UniqueConstraint,
 	ViewColumn,
 } from './ddl';
-import { defaultNameForIdentitySequence, defaults, trimDefaultValueSuffix, typeFor } from './grammar';
+import { defaultNameForIdentitySequence, defaults, Enum, typeFor } from './grammar';
 
 // TODO: omit defaults opclass... improvement
 const imports = [
 	'smallint',
 	'integer',
 	'bigint',
+	'numeric',
+	'decimal',
+	'real',
+	'doublePrecision',
 	'boolean',
-	'text',
-	'varchar',
 	'char',
+	'varchar',
+	'text',
+	'json',
+	'jsonb',
+
 	'serial',
 	'smallserial',
 	'bigserial',
-	'decimal',
-	'numeric',
-	'real',
-	'json',
-	'jsonb',
+
 	'time',
 	'timestamp',
 	'date',
@@ -53,15 +56,17 @@ const imports = [
 	'macaddr',
 	'macaddr8',
 	'bigint',
-	'doublePrecision',
 	'uuid',
 	'vector',
+	'halfvec',
+	'sparsevec',
 	'point',
 	'line',
 	'geometry',
 	'bit',
 	'pgEnum',
 	'gelEnum',
+	'customType',
 ] as const;
 export type Import = typeof imports[number];
 
@@ -82,96 +87,6 @@ const objToStatement2 = (json: { [s: string]: unknown }) => {
 	statement += ' }';
 	return statement;
 };
-
-const timeConfig = (json: { [s: string]: unknown }) => {
-	json = Object.fromEntries(Object.entries(json).filter((it) => it[1]));
-
-	const keys = Object.keys(json);
-	if (keys.length === 0) return;
-
-	let statement = '{ ';
-	statement += keys.map((it) => `${it}: ${json[it]}`).join(', ');
-	statement += ' }';
-	return statement;
-};
-
-const possibleIntervals = [
-	'year',
-	'month',
-	'day',
-	'hour',
-	'minute',
-	'second',
-	'year to month',
-	'day to hour',
-	'day to minute',
-	'day to second',
-	'hour to minute',
-	'hour to second',
-	'minute to second',
-];
-
-const intervalStrToObj = (str: string) => {
-	if (str.startsWith('interval(')) {
-		return {
-			precision: Number(str.substring('interval('.length, str.length - 1)),
-		};
-	}
-	const splitted = str.split(' ');
-	if (splitted.length === 1) {
-		return {};
-	}
-	const rest = splitted.slice(1, splitted.length).join(' ');
-	if (possibleIntervals.includes(rest)) {
-		return { fields: `"${rest}"` };
-	}
-
-	for (const s of possibleIntervals) {
-		if (rest.startsWith(`${s}(`)) {
-			return {
-				fields: `"${s}"`,
-				precision: Number(rest.substring(s.length + 1, rest.length - 1)),
-			};
-		}
-	}
-	return {};
-};
-
-const intervalConfig = (str: string) => {
-	const json = intervalStrToObj(str);
-	// json = Object.fromEntries(Object.entries(json).filter((it) => it[1]));
-
-	const keys = Object.keys(json);
-	if (keys.length === 0) return;
-
-	let statement = '{ ';
-	statement += keys.map((it: keyof typeof json) => `${it}: ${json[it]}`).join(', ');
-	statement += ' }';
-	return statement;
-};
-
-const mapColumnDefault = (def: Exclude<Column['default'], null>) => {
-	if (def.type === 'unknown' || def.type === 'func') {
-		return `sql\`${def.value}\``;
-	}
-	if (def.type === 'bigint') {
-		return `${def.value}n`;
-	}
-	if (def.type === 'string') {
-		return `"${def.value.replaceAll("''", "'").replaceAll('"', '\\"')}"`;
-	}
-
-	return def.value;
-};
-
-const importsPatch = {
-	'double precision': 'doublePrecision',
-	'timestamp without time zone': 'timestamp',
-	'timestamp with time zone': 'timestamp',
-	'time without time zone': 'time',
-	'time with time zone': 'time',
-	'character varying': 'varchar',
-} as Record<string, string>;
 
 const relations = new Set<string>();
 
@@ -374,20 +289,9 @@ export const ddlToTypeScript = (
 
 		if (x.entityType === 'columns' || x.entityType === 'viewColumns') {
 			let patched = x.type.replace('[]', '');
-			patched = importsPatch[patched] || patched;
-
-			patched = patched === 'double precision' ? 'doublePrecision' : patched;
-			patched = patched.startsWith('varchar(') ? 'varchar' : patched;
-			patched = patched.startsWith('character varying(') ? 'varchar' : patched;
-			patched = patched.startsWith('character(') ? 'char' : patched;
-			patched = patched.startsWith('char(') ? 'char' : patched;
-			patched = patched.startsWith('numeric(') ? 'numeric' : patched;
-			patched = patched.startsWith('time(') ? 'time' : patched;
-			patched = patched.startsWith('timestamp(') ? 'timestamp' : patched;
-			patched = patched.startsWith('vector(') ? 'vector' : patched;
-			patched = patched.startsWith('geometry(') ? 'geometry' : patched;
-			patched = patched.startsWith('interval') ? 'interval' : patched;
-
+			const isEnum = Boolean(x.typeSchema);
+			const grammarType = typeFor(patched, isEnum);
+			imports.add(grammarType.drizzleImport());
 			if (pgImportsList.has(patched)) imports.add(patched);
 		}
 
@@ -406,7 +310,7 @@ export const ddlToTypeScript = (
 
 		const values = Object.values(it.values)
 			.map((it) => {
-				return `\`${it.replace('`', '\\`')}\``;
+				return `"${escapeForTsLiteral(it)}"`;
 			})
 			.join(', ');
 		return `export const ${withCasing(paramName, casing)} = ${func}("${it.name}", [${values}])\n`;
@@ -445,19 +349,15 @@ export const ddlToTypeScript = (
 	const rolesStatements = ddl.roles.list().map((it) => {
 		const identifier = withCasing(it.name, casing);
 		rolesNameToTsKey[it.name] = identifier;
+		const params = {
+			...(it.createDb ? { createDb: true } : {}),
+			...(it.createRole ? { createRole: true } : {}),
+			...(it.inherit ? {} : { inherit: false }),
+		};
+		const paramsString = inspect(params);
+		const comma = paramsString ? ', ' : '';
 
-		const params = !it.createDb && !it.createRole && it.inherit
-			? ''
-			: `${
-				trimChar(
-					`, { ${it.createDb ? `createDb: true,` : ''}${it.createRole ? ` createRole: true,` : ''}${
-						!it.inherit ? ` inherit: false ` : ''
-					}`,
-					',',
-				)
-			}	}`;
-
-		return `export const ${identifier} = pgRole("${it.name}", ${params});\n`;
+		return `export const ${identifier} = pgRole("${it.name}"${comma}${paramsString});\n`;
 	})
 		.join('');
 
@@ -474,7 +374,6 @@ export const ddlToTypeScript = (
 			columns,
 			table.pk,
 			fks,
-			enumTypes,
 			schemas,
 			casing,
 		);
@@ -585,160 +484,33 @@ const isSelf = (fk: ForeignKey) => {
 	return fk.table === fk.tableTo;
 };
 
-const mapDefault = (
-	type: string,
-	enumTypes: Set<string>,
-	typeSchema: string,
-	dimensions: number,
-	def: Column['default'],
-) => {
-	if (!def) return '';
-
-	const grammarType = typeFor(type);
-	if (grammarType) {
-		console.log(def.value, dimensions);
-		if (dimensions > 0) {
-			try {
-				const parsed = JSON.parse(def.value);
-				const res = grammarType.toArrayTs(type, parsed);
-				return res.default ? `.default(${res.default})` : '';
-			} catch {
-				console.log('asdasd');
-				return `.default(sql\`${def.value}\`)`;
-			}
-		}
-
-		const res = grammarType.toTs(type, def.value);
-		return res.default ? `.default(${res.default})` : '';
-	}
-
-	const lowered = type.toLowerCase().replace('[]', '');
-	if (enumTypes.has(`${typeSchema}.${type.replace('[]', '')}`)) {
-		if (dimensions > 0) {
-			const arr = parseArray(def.value);
-			if (arr.flat(5).length === 0) return `.default([])`;
-			const res = stringifyArray(arr, 'ts', (x) => `'${x.replaceAll("'", "\\'")}'`);
-			return `.default(${res})`;
-		}
-		return `.default(${mapColumnDefault(def)})`;
-	}
-
-	const parsed = dimensions > 0 ? parseArray(trimChar(trimDefaultValueSuffix(def.value), "'")) : def.value;
-	if (lowered === 'uuid') {
-		if (def.value === 'gen_random_uuid()') return '.defaultRandom()';
-		const res = stringifyArray(parsed, 'ts', (x) => {
-			return `'${x}'`;
-		});
-		return `.default(${res})`;
-	}
-
-	if (lowered === 'timestamp') {
-		if (def.value === 'now()') return '.defaultNow()';
-		const res = stringifyArray(parsed, 'ts', (x) => {
-			// Matches YYYY-MM-DD HH:MI:SS, YYYY-MM-DD HH:MI:SS.FFFFFF, YYYY-MM-DD HH:MI:SS+TZ, YYYY-MM-DD HH:MI:SS.FFFFFF+TZ and YYYY-MM-DD HH:MI:SS+HH:MI
-			return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}(:\d{2})?)?$/.test(x) ? `'${x}'` : `sql\`${x}\``;
-		});
-
-		return `.default(${res})`;
-	}
-
-	if (lowered === 'time') {
-		if (def.value === 'now()') return '.defaultNow()';
-		const res = stringifyArray(parsed, 'ts', (x) => {
-			return /^\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(x) ? `'${x}'` : `sql\`${x}\``; // Matches HH:MI, HH:MI:SS and HH:MI:SS.FFFFFF
-		});
-
-		return `.default(${res})`;
-	}
-
-	if (lowered === 'date') {
-		if (def.value === 'now()') return '.defaultNow()';
-		const res = stringifyArray(parsed, 'ts', (x) => {
-			return /^\d{4}-\d{2}-\d{2}$/.test(x) ? `'${x}'` : `sql\`${x}\``; // Matches YYYY-MM-DD
-		});
-		return `.default(${res})`;
-	}
-
-	if (lowered === 'json' || lowered === 'jsonb') {
-		if (!def.value) return '';
-		if (def.type === 'unknown') {
-			return `.default(sql\`${def.value}\`)`;
-		}
-		const res = stringifyArray(parsed, 'ts', (x) => {
-			return String(x);
-		});
-		return `.default(${res})`;
-	}
-
-	if (lowered === 'point' || lowered === 'line') {
-		if (typeof parsed === 'string') {
-			return `.default([${parsed.substring(1, parsed.length - 1).split(',')}])`; // "{1,1,1}" -> [1,1,1]
-		}
-		if (parsed.flat(5).length === 0) return `.default([])`;
-		const res = stringifyArray(parsed, 'ts', (x) => String(x.substring(1, x.length - 1).split(',')));
-
-		return `.default([${res}])`;
-	}
-
-	// if () {
-	// 		if (typeof parsed === 'string') {
-	// 		return `.default([${parsed.substring(1, parsed.length - 1).split(',')}])`; // "{1,1,1}" -> [1,1,1]
-	// 	}
-	// 	if (parsed.flat(5).length === 0) return `.default([])`;
-	// 	const res = stringifyArray(parsed, 'ts', (x) => String(x.substring(1, x.length - 1).split(',')));
-
-	// 	return `.default([${res}])`;
-	// }
-
-	const mapper = lowered === 'char'
-			|| lowered === 'varchar'
-			|| lowered === 'text'
-			|| lowered === 'inet'
-			|| lowered === 'cidr'
-			|| lowered === 'macaddr8'
-			|| lowered === 'macaddr'
-		? (x: string) => {
-			if (dimensions === 0) {
-				return `\`${x.replaceAll('`', '\\\`').replaceAll("''", "'")}\``;
-			}
-
-			return `\`${x.replaceAll('`', '\\\`')}\``;
-		}
-		: lowered === 'bigint'
-				|| lowered === 'numeric'
-		? (x: string) => {
-			const value = Number(x);
-			return value > Number.MAX_SAFE_INTEGER || value < Number.MIN_SAFE_INTEGER ? `${x}n` : `${x}`;
-		}
-		: lowered.startsWith('interval')
-		? (x: string) => `'${x}'`
-		: lowered.startsWith('boolean')
-		? (x: string) => x === 't' || x === 'true' ? 'true' : 'false'
-		: (x: string) => def.type === 'unknown' ? `sql\`${x}\`` : `${x}`;
-
-	if (dimensions > 0) {
-		if (def.type === 'unknown') {
-			return `.default(sql\`${def.value}\`)`;
-		}
-
-		if ((parsed as ArrayValue[]).flat(5).length === 0) return `.default([])`;
-		const res = stringifyArray(parsed, 'ts', mapper);
-		return `.default(${res})`;
-	}
-
-	return `.default(${mapper(def.value)})`;
-};
-
 const column = (
 	type: string,
-	options: string | null,
+	dimensions: number,
 	name: string,
 	enumTypes: Set<string>,
-	typeSchema: string,
+	typeSchema: string | null,
 	casing: Casing,
 	def: Column['default'],
 ) => {
-	const lowered = type.toLowerCase().replace('[]', '');
+	const isEnum = Boolean(typeSchema);
+	const grammarType = typeFor(type, isEnum);
+
+	const { options, default: defaultValue, customType } = dimensions > 0
+		? grammarType.toArrayTs(type, def?.value ?? null)
+		: grammarType.toTs(type, def?.value ?? null);
+
+	const dbName = dbColumnName({ name, casing });
+	const opts = inspect(options);
+	const comma = (dbName && opts) ? ', ' : '';
+
+	let columnStatement = `${withCasing(name, casing)}: ${
+		isEnum ? withCasing(paramNameFor(type, typeSchema), casing) : grammarType.drizzleImport()
+	}${customType ? `({ dataType: () => '${customType}' })` : ''}(${dbName}${comma}${opts})`;
+	columnStatement += '.array()'.repeat(dimensions);
+
+	if (defaultValue) columnStatement += `.default(${defaultValue})`;
+	return columnStatement;
 
 	if (enumTypes.has(`${typeSchema}.${type.replace('[]', '')}`)) {
 		let out = `${withCasing(name, casing)}: ${withCasing(paramNameFor(type.replace('[]', ''), typeSchema), casing)}(${
@@ -747,258 +519,258 @@ const column = (
 		return out;
 	}
 
-	if (lowered === 'serial') {
-		return `${withCasing(name, casing)}: serial(${dbColumnName({ name, casing })})`;
-	}
+	// if (lowered === 'serial') {
+	// 	return `${withCasing(name, casing)}: serial(${dbColumnName({ name, casing })})`;
+	// }
 
-	if (lowered === 'smallserial') {
-		return `${withCasing(name, casing)}: smallserial(${dbColumnName({ name, casing })})`;
-	}
+	// if (lowered === 'smallserial') {
+	// 	return `${withCasing(name, casing)}: smallserial(${dbColumnName({ name, casing })})`;
+	// }
 
-	if (lowered === 'bigserial') {
-		return `${withCasing(name, casing)}: bigserial(${
-			dbColumnName({ name, casing, withMode: true })
-		}{ mode: "bigint" })`;
-	}
+	// if (lowered === 'bigserial') {
+	// 	return `${withCasing(name, casing)}: bigserial(${
+	// 		dbColumnName({ name, casing, withMode: true })
+	// 	}{ mode: "bigint" })`;
+	// }
 
-	if (lowered === 'integer') {
-		let out = `${withCasing(name, casing)}: integer(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === 'integer') {
+	// 	let out = `${withCasing(name, casing)}: integer(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === 'smallint') {
-		let out = `${withCasing(name, casing)}: smallint(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === 'smallint') {
+	// 	let out = `${withCasing(name, casing)}: smallint(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === 'bigint') {
-		let out = `// You can use { mode: "bigint" } if numbers are exceeding js number limitations\n\t`;
-		const mode = def && def.type === 'bigint' ? 'bigint' : 'number';
-		out += `${withCasing(name, casing)}: bigint(${dbColumnName({ name, casing, withMode: true })}{ mode: '${mode}' })`;
-		return out;
-	}
+	// if (lowered === 'bigint') {
+	// 	let out = `// You can use { mode: "bigint" } if numbers are exceeding js number limitations\n\t`;
+	// 	const mode = def && def.type === 'bigint' ? 'bigint' : 'number';
+	// 	out += `${withCasing(name, casing)}: bigint(${dbColumnName({ name, casing, withMode: true })}{ mode: '${mode}' })`;
+	// 	return out;
+	// }
 
-	if (lowered === 'boolean') {
-		let out = `${withCasing(name, casing)}: boolean(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === 'boolean') {
+	// 	let out = `${withCasing(name, casing)}: boolean(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === 'double precision') {
-		let out = `${withCasing(name, casing)}: doublePrecision(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === 'double precision') {
+	// 	let out = `${withCasing(name, casing)}: doublePrecision(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === 'real') {
-		let out = `${withCasing(name, casing)}: real(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === 'real') {
+	// 	let out = `${withCasing(name, casing)}: real(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === 'uuid') {
-		let out = `${withCasing(name, casing)}: uuid(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === 'uuid') {
+	// 	let out = `${withCasing(name, casing)}: uuid(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === 'numeric') {
-		let params: { precision?: number; scale?: number; mode?: any } = {};
+	// if (lowered === 'numeric') {
+	// 	let params: { precision?: number; scale?: number; mode?: any } = {};
 
-		if (options) {
-			const [p, s] = options.split(',');
-			if (p) params['precision'] = Number(p);
-			if (s) params['scale'] = Number(s);
-		}
+	// 	if (options) {
+	// 		const [p, s] = options.split(',');
+	// 		if (p) params['precision'] = Number(p);
+	// 		if (s) params['scale'] = Number(s);
+	// 	}
 
-		let mode = def !== null && def.type === 'bigint'
-			? 'bigint'
-			: def !== null && def.type === 'string'
-			? 'number'
-			: 'number';
+	// 	let mode = def !== null && def.type === 'bigint'
+	// 		? 'bigint'
+	// 		: def !== null && def.type === 'string'
+	// 		? 'number'
+	// 		: 'number';
 
-		if (mode) params['mode'] = mode;
+	// 	if (mode) params['mode'] = mode;
 
-		let out = Object.keys(params).length > 0
-			? `${withCasing(name, casing)}: numeric(${dbColumnName({ name, casing, withMode: true })}${
-				JSON.stringify(params)
-			})`
-			: `${withCasing(name, casing)}: numeric(${dbColumnName({ name, casing })})`;
+	// 	let out = Object.keys(params).length > 0
+	// 		? `${withCasing(name, casing)}: numeric(${dbColumnName({ name, casing, withMode: true })}${
+	// 			JSON.stringify(params)
+	// 		})`
+	// 		: `${withCasing(name, casing)}: numeric(${dbColumnName({ name, casing })})`;
 
-		return out;
-	}
+	// 	return out;
+	// }
 
-	if (lowered === 'timestamp') {
-		const withTimezone = lowered.includes('with time zone');
-		// const split = lowered.split(" ");
-		const precision = options
-			? Number(options)
-			: null;
+	// if (lowered === 'timestamp') {
+	// 	const withTimezone = lowered.includes('with time zone');
+	// 	// const split = lowered.split(" ");
+	// 	const precision = options
+	// 		? Number(options)
+	// 		: null;
 
-		const params = timeConfig({
-			precision,
-			withTimezone,
-			mode: "'string'",
-		});
+	// 	const params = timeConfig({
+	// 		precision,
+	// 		withTimezone,
+	// 		mode: "'string'",
+	// 	});
 
-		let out = params
-			? `${withCasing(name, casing)}: timestamp(${dbColumnName({ name, casing, withMode: true })}${params})`
-			: `${withCasing(name, casing)}: timestamp(${dbColumnName({ name, casing })})`;
+	// 	let out = params
+	// 		? `${withCasing(name, casing)}: timestamp(${dbColumnName({ name, casing, withMode: true })}${params})`
+	// 		: `${withCasing(name, casing)}: timestamp(${dbColumnName({ name, casing })})`;
 
-		return out;
-	}
+	// 	return out;
+	// }
 
-	if (lowered === 'time') {
-		const withTimezone = lowered.includes('with time zone');
+	// if (lowered === 'time') {
+	// 	const withTimezone = lowered.includes('with time zone');
 
-		let precision = options
-			? Number(options)
-			: null;
+	// 	let precision = options
+	// 		? Number(options)
+	// 		: null;
 
-		const params = timeConfig({ precision, withTimezone });
+	// 	const params = timeConfig({ precision, withTimezone });
 
-		let out = params
-			? `${withCasing(name, casing)}: time(${dbColumnName({ name, casing, withMode: true })}${params})`
-			: `${withCasing(name, casing)}: time(${dbColumnName({ name, casing })})`;
+	// 	let out = params
+	// 		? `${withCasing(name, casing)}: time(${dbColumnName({ name, casing, withMode: true })}${params})`
+	// 		: `${withCasing(name, casing)}: time(${dbColumnName({ name, casing })})`;
 
-		return out;
-	}
+	// 	return out;
+	// }
 
-	if (lowered.startsWith('interval')) {
-		// const withTimezone = lowered.includes("with time zone");
-		// const split = lowered.split(" ");
-		// let precision = split.length >= 2 ? Number(split[1].substring(1, 2)) : null;
-		// precision = precision ? precision : null;
+	// if (lowered.startsWith('interval')) {
+	// 	// const withTimezone = lowered.includes("with time zone");
+	// 	// const split = lowered.split(" ");
+	// 	// let precision = split.length >= 2 ? Number(split[1].substring(1, 2)) : null;
+	// 	// precision = precision ? precision : null;
 
-		const suffix = options ? `(${options})` : '';
-		const params = intervalConfig(`${lowered}${suffix}`);
-		let out = options
-			? `${withCasing(name, casing)}: interval(${dbColumnName({ name, casing, withMode: true })}${params})`
-			: `${withCasing(name, casing)}: interval(${dbColumnName({ name, casing })})`;
+	// 	const suffix = options ? `(${options})` : '';
+	// 	const params = intervalConfig(`${lowered}${suffix}`);
+	// 	let out = options
+	// 		? `${withCasing(name, casing)}: interval(${dbColumnName({ name, casing, withMode: true })}${params})`
+	// 		: `${withCasing(name, casing)}: interval(${dbColumnName({ name, casing })})`;
 
-		return out;
-	}
+	// 	return out;
+	// }
 
-	if (lowered === 'date') {
-		let out = `${withCasing(name, casing)}: date(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === 'date') {
+	// 	let out = `${withCasing(name, casing)}: date(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('text')) {
-		let out = `${withCasing(name, casing)}: text(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('text')) {
+	// 	let out = `${withCasing(name, casing)}: text(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('jsonb')) {
-		let out = `${withCasing(name, casing)}: jsonb(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('jsonb')) {
+	// 	let out = `${withCasing(name, casing)}: jsonb(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('json')) {
-		let out = `${withCasing(name, casing)}: json(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('json')) {
+	// 	let out = `${withCasing(name, casing)}: json(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('inet')) {
-		let out = `${withCasing(name, casing)}: inet(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('inet')) {
+	// 	let out = `${withCasing(name, casing)}: inet(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('cidr')) {
-		let out = `${withCasing(name, casing)}: cidr(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('cidr')) {
+	// 	let out = `${withCasing(name, casing)}: cidr(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('macaddr8')) {
-		let out = `${withCasing(name, casing)}: macaddr8(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('macaddr8')) {
+	// 	let out = `${withCasing(name, casing)}: macaddr8(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('macaddr')) {
-		let out = `${withCasing(name, casing)}: macaddr(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('macaddr')) {
+	// 	let out = `${withCasing(name, casing)}: macaddr(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === 'varchar') {
-		let out: string;
-		if (options) { // size
-			out = `${withCasing(name, casing)}: varchar(${
-				dbColumnName({ name, casing, withMode: true })
-			}{ length: ${options} })`;
-		} else {
-			out = `${withCasing(name, casing)}: varchar(${dbColumnName({ name, casing })})`;
-		}
+	// if (lowered === 'varchar') {
+	// 	let out: string;
+	// 	if (options) { // size
+	// 		out = `${withCasing(name, casing)}: varchar(${
+	// 			dbColumnName({ name, casing, withMode: true })
+	// 		}{ length: ${options} })`;
+	// 	} else {
+	// 		out = `${withCasing(name, casing)}: varchar(${dbColumnName({ name, casing })})`;
+	// 	}
 
-		return out;
-	}
+	// 	return out;
+	// }
 
-	if (lowered === ('point')) {
-		let out: string = `${withCasing(name, casing)}: point(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('point')) {
+	// 	let out: string = `${withCasing(name, casing)}: point(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('line')) {
-		let out: string = `${withCasing(name, casing)}: line(${dbColumnName({ name, casing })})`;
-		return out;
-	}
+	// if (lowered === ('line')) {
+	// 	let out: string = `${withCasing(name, casing)}: line(${dbColumnName({ name, casing })})`;
+	// 	return out;
+	// }
 
-	if (lowered === ('geometry')) {
-		let out: string = '';
+	// if (lowered === ('geometry')) {
+	// 	let out: string = '';
 
-		let isGeoUnknown = false;
+	// 	let isGeoUnknown = false;
 
-		if (lowered.length !== 8) {
-			const geometryOptions = options ? options.split(',') : [];
-			if (geometryOptions.length === 1 && geometryOptions[0] !== '') {
-				out = `${withCasing(name, casing)}: geometry(${dbColumnName({ name, casing, withMode: true })}{ type: "${
-					geometryOptions[0]
-				}" })`;
-			} else if (geometryOptions.length === 2) {
-				out = `${withCasing(name, casing)}: geometry(${dbColumnName({ name, casing, withMode: true })}{ type: "${
-					geometryOptions[0]
-				}", srid: ${geometryOptions[1]} })`;
-			} else {
-				isGeoUnknown = true;
-			}
-		} else {
-			out = `${withCasing(name, casing)}: geometry(${dbColumnName({ name, casing })})`;
-		}
+	// 	if (lowered.length !== 8) {
+	// 		const geometryOptions = options ? options.split(',') : [];
+	// 		if (geometryOptions.length === 1 && geometryOptions[0] !== '') {
+	// 			out = `${withCasing(name, casing)}: geometry(${dbColumnName({ name, casing, withMode: true })}{ type: "${
+	// 				geometryOptions[0]
+	// 			}" })`;
+	// 		} else if (geometryOptions.length === 2) {
+	// 			out = `${withCasing(name, casing)}: geometry(${dbColumnName({ name, casing, withMode: true })}{ type: "${
+	// 				geometryOptions[0]
+	// 			}", srid: ${geometryOptions[1]} })`;
+	// 		} else {
+	// 			isGeoUnknown = true;
+	// 		}
+	// 	} else {
+	// 		out = `${withCasing(name, casing)}: geometry(${dbColumnName({ name, casing })})`;
+	// 	}
 
-		if (isGeoUnknown) {
-			//  TODO:
-			let unknown =
-				`// failed to parse geometry type because found more than 2 options inside geometry function '${type}'\n// Introspect is currently supporting only type and srid options\n`;
-			unknown += `\t${withCasing(name, casing)}: unknown("${name}")`;
-			return unknown;
-		}
-		return out;
-	}
+	// 	if (isGeoUnknown) {
+	// 		//  TODO:
+	// 		let unknown =
+	// 			`// failed to parse geometry type because found more than 2 options inside geometry function '${type}'\n// Introspect is currently supporting only type and srid options\n`;
+	// 		unknown += `\t${withCasing(name, casing)}: unknown("${name}")`;
+	// 		return unknown;
+	// 	}
+	// 	return out;
+	// }
 
-	if (lowered === ('vector')) {
-		let out: string;
-		if (options) {
-			out = `${withCasing(name, casing)}: vector(${
-				dbColumnName({ name, casing, withMode: true })
-			}{ dimensions: ${options} })`;
-		} else {
-			out = `${withCasing(name, casing)}: vector(${dbColumnName({ name, casing })})`;
-		}
+	// if (lowered === ('vector')) {
+	// 	let out: string;
+	// 	if (options) {
+	// 		out = `${withCasing(name, casing)}: vector(${
+	// 			dbColumnName({ name, casing, withMode: true })
+	// 		}{ dimensions: ${options} })`;
+	// 	} else {
+	// 		out = `${withCasing(name, casing)}: vector(${dbColumnName({ name, casing })})`;
+	// 	}
 
-		return out;
-	}
+	// 	return out;
+	// }
 
-	if (lowered === ('char')) {
-		let out: string;
-		if (options) {
-			out = `${withCasing(name, casing)}: char(${
-				dbColumnName({ name, casing, withMode: true })
-			}{ length: ${options} })`;
-		} else {
-			out = `${withCasing(name, casing)}: char(${dbColumnName({ name, casing })})`;
-		}
+	// if (lowered === ('char')) {
+	// 	let out: string;
+	// 	if (options) {
+	// 		out = `${withCasing(name, casing)}: char(${
+	// 			dbColumnName({ name, casing, withMode: true })
+	// 		}{ length: ${options} })`;
+	// 	} else {
+	// 		out = `${withCasing(name, casing)}: char(${dbColumnName({ name, casing })})`;
+	// 	}
 
-		return out;
-	}
+	// 	return out;
+	// }
 
-	if (lowered.startsWith('bit')) {
-		return `${withCasing(name, casing)}: bit(${dbColumnName({ name, casing })}{ dimensions: ${options}})`;
-	}
+	// if (lowered.startsWith('bit')) {
+	// 	return `${withCasing(name, casing)}: bit(${dbColumnName({ name, casing })}{ dimensions: ${options}})`;
+	// }
 
 	let unknown = `// TODO: failed to parse database type '${type}'\n`;
 	unknown += `\t${withCasing(name, casing)}: unknown("${name}")`;
@@ -1015,10 +787,10 @@ const createViewColumns = (
 	columns.forEach((it) => {
 		const columnStatement = column(
 			it.type,
-			null,
+			it.dimensions,
 			it.name,
 			enumTypes,
-			it.typeSchema ?? 'public',
+			it.typeSchema,
 			casing,
 			null,
 		);
@@ -1036,7 +808,6 @@ const createTableColumns = (
 	columns: Column[],
 	primaryKey: PrimaryKey | null,
 	fks: ForeignKey[],
-	enumTypes: Set<string>,
 	schemas: Record<string, string>,
 	casing: Casing,
 ): string => {
@@ -1056,31 +827,37 @@ const createTableColumns = (
 		return res;
 	}, {} as Record<string, ForeignKey[]>);
 
-	columns.forEach((it) => {
-		const columnStatement = column(
-			it.type,
-			it.options,
-			it.name,
-			enumTypes,
-			it.typeSchema ?? 'public',
-			casing,
-			it.default,
-		);
+	for (const it of columns) {
+		const { name, type, dimensions, default: def, identity, generated, typeSchema } = it;
+		const stripped = type.replaceAll('[]', '');
+		const isEnum = Boolean(typeSchema);
+		const grammarType = typeFor(stripped, isEnum);
+
+		const { options, default: defaultValue, customType } = dimensions > 0
+			? grammarType.toArrayTs(type, def?.value ?? null)
+			: grammarType.toTs(type, def?.value ?? null);
+
+		const dbName = dbColumnName({ name, casing });
+		const opts = inspect(options);
+		const comma = (dbName && opts) ? ', ' : '';
+
 		const pk = primaryKey && primaryKey.columns.length === 1 && primaryKey.columns[0] === it.name
 			? primaryKey
 			: null;
 
+		let columnStatement = `${withCasing(name, casing)}: ${
+			isEnum ? withCasing(paramNameFor(type, typeSchema), casing) : grammarType.drizzleImport()
+		}${customType ? `({ dataType: () => '${customType}' })` : ''}(${dbName}${comma}${opts})`;
+		columnStatement += '.array()'.repeat(dimensions);
+		if (defaultValue) columnStatement += defaultValue.startsWith('.') ? defaultValue : `.default(${defaultValue})`;
+		if (pk) columnStatement += '.primaryKey()';
+		if (it.notNull && !it.identity && !pk) columnStatement += '.notNull()';
+		if (identity) columnStatement += generateIdentityParams(it);
+		if (generated) columnStatement += `.generatedAlwaysAs(sql\`${generated.as}\`)`;
+
 		statement += '\t';
 		statement += columnStatement;
 		// Provide just this in column function
-		statement += '.array()'.repeat(it.dimensions);
-		statement += mapDefault(it.type, enumTypes, it.typeSchema ?? 'public', it.dimensions, it.default);
-		statement += pk ? '.primaryKey()' : '';
-		statement += it.notNull && !it.identity && !pk ? '.notNull()' : '';
-
-		statement += it.identity ? generateIdentityParams(it) : '';
-
-		statement += it.generated ? `.generatedAlwaysAs(sql\`${it.generated.as}\`)` : '';
 
 		const fks = fkByColumnName[it.name];
 		// Andrii: I switched it off until we will get a custom naem setting in references
@@ -1116,7 +893,7 @@ const createTableColumns = (
 		}
 
 		statement += ',\n';
-	});
+	}
 
 	return statement;
 };

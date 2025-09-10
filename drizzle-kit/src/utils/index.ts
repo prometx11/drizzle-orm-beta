@@ -117,23 +117,22 @@ export type ArrayValue = unknown | null | ArrayValue[];
 
 export function stringifyArray(
 	value: ArrayValue,
-	mode: 'sql' | 'ts',
+	mode: 'sql' | 'ts' | 'geometry-sql',
 	mapCallback: (v: any | null, depth: number) => string,
 	depth: number = 0,
 ): string {
 	if (!Array.isArray(value)) return mapCallback(value, depth);
 	depth += 1;
-
 	const res = value.map((e) => {
-		if (Array.isArray(e)) return stringifyArray(e, mode, mapCallback);
+		if (Array.isArray(e)) return stringifyArray(e, mode, mapCallback, depth);
 		return mapCallback(e, depth);
 	}).join(',');
-	return mode === 'ts' ? `[${res}]` : `{${res}}`;
+	return mode === 'ts' ? `[${res}]` : mode === 'geometry-sql' ? `ARRAY[${res}]` : `{${res}}`;
 }
 
 export function stringifyTuplesArray(
 	array: ArrayValue[],
-	mode: 'sql' | 'ts',
+	mode: 'sql' | 'ts' | 'geometry-sql',
 	mapCallback: (v: ArrayValue, depth: number) => string,
 	depth: number = 0,
 ): string {
@@ -146,16 +145,131 @@ export function stringifyTuplesArray(
 		}
 		return mapCallback(e, depth);
 	}).join(',');
-	return mode === 'ts' ? `[${res}]` : `{${res}}`;
+	return mode === 'ts' ? `[${res}]` : mode === 'geometry-sql' ? `ARRAY[${res}]` : `{${res}}`;
 }
 
-export const trimChar = (str: string, char: string) => {
-	let start = 0;
-	let end = str.length;
+export const trimChar = (str: string, char: string | [string, string]) => {
+	if (str.length < 2) return str;
+	if (typeof char === 'string' && str.startsWith(char) && str.endsWith(char)) return str.substring(1, str.length - 1);
+	if (Array.isArray(char) && str.startsWith(char[0]) && str.endsWith(char[1])) return str.substring(1, str.length - 1);
 
-	while (start < end && str[start] === char) ++start;
-	while (end > start && str[end - 1] === char) --end;
-
-	const res = start > 0 || end < str.length ? str.substring(start, end) : str;
-	return res;
+	return str;
 };
+
+export const splitExpressions = (input: string | null): string[] => {
+	if (!input) return [];
+
+	const expressions: string[] = [];
+	let parenDepth = 0;
+	let inSingleQuotes = false;
+	let inDoubleQuotes = false;
+	let currentExpressionStart = 0;
+
+	for (let i = 0; i < input.length; i++) {
+		const char = input[i];
+
+		if (char === "'" && input[i + 1] === "'") {
+			i++;
+			continue;
+		}
+
+		if (char === '"' && input[i + 1] === '"') {
+			i++;
+			continue;
+		}
+
+		if (char === "'") {
+			if (!inDoubleQuotes) {
+				inSingleQuotes = !inSingleQuotes;
+			}
+			continue;
+		}
+		if (char === '"') {
+			if (!inSingleQuotes) {
+				inDoubleQuotes = !inDoubleQuotes;
+			}
+			continue;
+		}
+
+		if (!inSingleQuotes && !inDoubleQuotes) {
+			if (char === '(') {
+				parenDepth++;
+			} else if (char === ')') {
+				parenDepth = Math.max(0, parenDepth - 1);
+			} else if (char === ',' && parenDepth === 0) {
+				expressions.push(input.substring(currentExpressionStart, i).trim());
+				currentExpressionStart = i + 1;
+			}
+		}
+	}
+
+	if (currentExpressionStart < input.length) {
+		expressions.push(input.substring(currentExpressionStart).trim());
+	}
+
+	return expressions.filter((s) => s.length > 0);
+};
+
+export const wrapWith = (it: string, char: string) => {
+	if (!it.startsWith(char) || !it.endsWith(char)) return `${char}${it}${char}`;
+	return it;
+};
+
+export const timeTzRegex = /\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)?/;
+export const isTime = (it: string) => {
+	return timeTzRegex.test(it);
+};
+
+export const dateExtractRegex = /^\d{4}-\d{2}-\d{2}/;
+export const isDate = (it: string) => {
+	return dateExtractRegex.test(it);
+};
+
+const timestampRegexp =
+	/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)?|\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)$/;
+export const isTimestamp = (it: string) => {
+	return timestampRegexp.test(it);
+};
+
+export const timezoneSuffixRegexp = /([+-]\d{2}(:?\d{2})?)$/i;
+export function hasTimeZoneSuffix(s: string): boolean {
+	return timezoneSuffixRegexp.test(s);
+}
+
+export const possibleIntervals = [
+	'year',
+	'month',
+	'day',
+	'hour',
+	'minute',
+	'second',
+	'year to month',
+	'day to hour',
+	'day to minute',
+	'day to second',
+	'hour to minute',
+	'hour to second',
+	'minute to second',
+];
+export function parseIntervalFields(type: string): { fields?: typeof possibleIntervals[number]; precision?: number } {
+	const options: { precision?: number; fields?: typeof possibleIntervals[number] } = {};
+	// incoming: interval day to second(3)
+
+	// [interval, day, to, second(3)]
+	const splitted = type.split(' ');
+	if (splitted.length === 1) {
+		return options;
+	}
+
+	// [day, to, second(3)]
+	// day to second(3)
+	const rest = splitted.slice(1, splitted.length).join(' ');
+	if (possibleIntervals.includes(rest)) return { ...options, fields: rest };
+
+	// day to second(3)
+	for (const s of possibleIntervals) {
+		if (rest.startsWith(`${s}(`)) return { ...options, fields: s };
+	}
+
+	return options;
+}
